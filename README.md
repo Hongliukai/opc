@@ -140,6 +140,7 @@ map[numeric.sin.int64:{91 192 2019-06-21 15:23:08 +0000 UTC} numeric.saw.float:{
     allow_write = false
     allow_add = true
     allow_remove = true
+    all_tags = true
   
     [opc]
     server = "Graybox.Simulator"
@@ -157,7 +158,17 @@ map[numeric.sin.int64:{91 192 2019-06-21 15:23:08 +0000 UTC} numeric.saw.float:{
     - Get tags: 
       ```
       $ curl.exe -X GET localhost:4444/tags
-      {"numeric.saw.float":-21.41,"numeric.sin.float":62.303356}
+      {"numeric.saw.float":-21.41,"numeric.saw.float_time":"2024-08-01T06:05:01Z","numeric.sin.float":62.303356,"numeric.sin.float_time":"2024-08-01T06:05:01Z"}
+      ```
+    - Get specified tags:
+      ```
+      $ curl.exe -X GET localhost:4444/tags -d '["numeric.saw.float"]'
+      {"numeric.saw.float":-21.41,"numeric.saw.float_time":"2024-08-01T06:05:01Z"}
+      ```
+    - Get specified tag:
+      ```
+      $ curl.exe -X GET localhost:4444/tag/numeric.triangle.float
+      {"numeric.saw.float":-21.41,"numeric.saw.float_time":"2024-08-01T06:05:01Z"}
       ```
     - Add tag: 
       ```
