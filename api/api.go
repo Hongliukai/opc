@@ -18,12 +18,13 @@ type App struct {
 	Config Config
 }
 
-//Config determines what services shall be exposed
-//through the App
+// Config determines what services shall be exposed
+// through the App
 type Config struct {
 	WriteTag  bool `toml:"allow_write"`
 	AddTag    bool `toml:"allow_add"`
 	DeleteTag bool `toml:"allow_remove"`
+	AllTags   bool `toml:"all_tags"`
 }
 
 // Initialize sets OPC connection and creates routes
@@ -44,7 +45,29 @@ func (a *App) Run(addr string) {
 
 // getTags returns all tags in the current opc connection, route: /tags
 func (a *App) getTags(w http.ResponseWriter, r *http.Request) {
-	respondWithJSON(w, http.StatusOK, a.Conn.Read())
+
+	var tags map[string]opc.Item
+	if r.Body == nil || r.ContentLength == 0 {
+		tags = a.Conn.Read()
+	} else {
+		var requestTags []string
+		decoder := json.NewDecoder(r.Body)
+		defer r.Body.Close()
+		if err := decoder.Decode(&requestTags); err != nil {
+			log.Printf("fail to decode request body: %v", err)
+			respondWithError(w, http.StatusBadRequest, "Invalid request payload")
+			return
+		}
+		tags = a.Conn.ReadItems(requestTags...)
+	}
+
+	object := make(map[string]interface{})
+	for tag, val := range tags {
+		object[tag] = val.Value
+		object[tag+"_time"] = val.Timestamp
+	}
+
+	respondWithJSON(w, http.StatusOK, object)
 }
 
 // createTag creates the tags in the opc connection, route: /tag

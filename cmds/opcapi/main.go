@@ -6,7 +6,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"strings"
@@ -38,7 +37,7 @@ func main() {
 	opc.Debug()
 
 	// parse config
-	data, err := ioutil.ReadFile(*cfgFile)
+	data, err := os.ReadFile(*cfgFile)
 	if err != nil {
 		panic(err)
 	}
@@ -68,6 +67,14 @@ func main() {
 	}
 
 	fmt.Println("API starting with OPC", server, nodes, *addr)
+
+	if cfg.Config.AllTags {
+		tree, err := opc.CreateBrowser(server, nodes)
+		if err != nil {
+			log.Fatal(err)
+		}
+		cfg.Opc.Tags = opc.CollectTags(tree)
+	}
 
 	client, err := opc.NewConnection(
 		server,
