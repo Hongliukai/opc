@@ -24,6 +24,8 @@ require (
 	github.com/prometheus/common v0.45.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/spf13/pflag v1.0.3 // indirect
-	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/sys v0.27.0 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
 )
+
+replace github.com/go-ole/go-ole => github.com/ffutop/go-ole v0.0.0-20260108054612-406cb8b003b0

@@ -44,7 +44,7 @@ func main() {
 			server := args[1]
 			CheckDebug()
 			obj := opc.NewAutomationObject()
-			_, err := obj.TryConnect(server, nodes)
+			_, _, err := obj.TryConnect(server, nodes)
 			if err != nil {
 				fmt.Println(err)
 				os.Exit(1)
