@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strings"
 
@@ -16,8 +18,9 @@ import (
 )
 
 var (
-	addr    = flag.String("addr", ":8765", "enter address to start api")
-	cfgFile = flag.String("conf", "opcapi.conf", "config file name")
+	addr      = flag.String("addr", ":8765", "enter address to start api")
+	pprofAddr = flag.String("pprof", ":6060", "enter address to start pprof")
+	cfgFile   = flag.String("conf", "opcapi.conf", "config file name")
 )
 
 type tmlConfig struct {
@@ -33,6 +36,11 @@ type opcConfig struct {
 
 func main() {
 	flag.Parse()
+
+	go func() {
+		log.Println("Starting pprof on", *pprofAddr)
+		log.Println(http.ListenAndServe(*pprofAddr, nil))
+	}()
 
 	opc.Debug()
 
@@ -81,11 +89,11 @@ func main() {
 		nodes,
 		cfg.Opc.Tags,
 	)
-	defer client.Close()
 
 	if err != nil {
 		panic(err)
 	}
+	defer client.Close()
 
 	app := api.App{Config: cfg.Config}
 	app.Initialize(client)
