@@ -364,21 +364,21 @@ func (ag *AutomationGroup) syncRead() (map[string]Item, error) {
 // syncReadTarget reads only the specified tags in targetTags and returns a map of Items.
 func (ag *AutomationGroup) syncReadTarget(targetTags []string) (map[string]Item, error) {
 	if len(targetTags) == 0 {
-		logger.Println("SyncRead No valid tags to read.")
+		logger.Println("No valid tags to read.")
 		return make(map[string]Item), nil
 	}
 	var serverHandles []int32
 	var tags []string
 	for _, tag := range targetTags {
 		if _, ok := ag.AutomationItems.itemsHandle[tag]; !ok {
-			logger.Printf("syncReadTarget Tag %s not found in itemsHandle.", tag)
+			logger.Printf("Tag %s not found in itemsHandle.", tag)
 			continue
 		}
 		tags = append(tags, tag)
 	}
 	count := len(tags)
 	if count == 0 {
-		logger.Println("SyncRead No valid tags to read.")
+		logger.Println("No valid tags to read.")
 		return make(map[string]Item), nil
 	}
 	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
@@ -395,7 +395,7 @@ func (ag *AutomationGroup) syncReadTarget(targetTags []string) (map[string]Item,
 			serverHandles = append(serverHandles, ag.AutomationItems.itemsHandle[tag])
 		}
 	} else {
-		return nil, errors.New("syncReadTarget Unsupported ReadMode for sync read")
+		return nil, errors.New("Unsupported ReadMode for sync read")
 	}
 
 	var saValues *ole.SafeArray
@@ -951,13 +951,26 @@ func (conn *opcConnectionImpl) Close() {
 	conn.mu.Lock()
 	logger.Println("Cleaning OPC connection.")
 	defer conn.mu.Unlock()
-	if conn.AutomationObject != nil {
-		conn.AutomationObject.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// must  close items first
+		if conn.AutomationItems != nil {
+			conn.AutomationItems.Close()
+		}
+		if conn.AutomationObject != nil {
+			conn.AutomationObject.Close()
+		}
+		logger.Println("OPC connection closed.")
+	}()
+
+	select {
+	case <-done:
+		// closed successfully
+	case <-time.After(10 * time.Second):
+		logger.Println("Timeout while closing OPC connection.")
 	}
-	if conn.AutomationItems != nil {
-		conn.AutomationItems.Close()
-	}
-	logger.Println("OPC connection closed.")
+
 }
 
 // NewConnection establishes a connection to the OpcServer object.

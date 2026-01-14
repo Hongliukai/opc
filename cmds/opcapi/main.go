@@ -9,7 +9,9 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/BurntSushi/toml"
 	"github.com/konimarti/opc"
@@ -102,14 +104,20 @@ func main() {
 		nodes,
 		cfg.Opc.Tags,
 	)
-
 	if err != nil {
 		panic(err)
 	}
+	// signal interrupt to run Close()
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
 	defer client.Close()
 
 	app := api.App{Config: cfg.Config}
 	app.Initialize(client)
 
-	app.Run(*addr)
+	go app.Run(*addr)
+
+	<-quit
+	log.Println("shutting down server...")
 }
