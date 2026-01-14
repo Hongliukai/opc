@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
@@ -21,10 +22,14 @@ type App struct {
 // Config determines what services shall be exposed
 // through the App
 type Config struct {
-	WriteTag  bool `toml:"allow_write"`
-	AddTag    bool `toml:"allow_add"`
-	DeleteTag bool `toml:"allow_remove"`
-	AllTags   bool `toml:"all_tags"`
+	WriteTag         bool          `toml:"allow_write"`
+	AddTag           bool          `toml:"allow_add"`
+	DeleteTag        bool          `toml:"allow_remove"`
+	AllTags          bool          `toml:"all_tags"`
+	Mode             int           `toml:"mode"`
+	ReadSource       int32         `toml:"read_source"`
+	ReadTagsAsServer bool          `toml:"read_tags_as_server"`
+	ServerReadPeriod time.Duration `toml:"server_read_period"`
 }
 
 // Initialize sets OPC connection and creates routes
@@ -84,12 +89,13 @@ func (a *App) createTag(w http.ResponseWriter, r *http.Request) {
 
 		err := a.Conn.Add(tags...)
 		if err != nil {
+			log.Printf("failed add tags: %v", err)
 			respondWithError(w, http.StatusBadRequest, "Did not add tags")
 			return
 		}
 		respondWithJSON(w, http.StatusCreated, map[string]interface{}{"result": "created"})
 	} else {
-		respondWithError(w, http.StatusBadRequest, "no additions allowed")
+		respondWithError(w, http.StatusBadRequest, "No additions allowed")
 	}
 }
 
@@ -99,7 +105,7 @@ func (a *App) getTag(w http.ResponseWriter, r *http.Request) {
 	item := a.Conn.ReadItem(vars["id"])
 	empty := opc.Item{}
 	if item == empty {
-		respondWithError(w, http.StatusNotFound, "tag not found")
+		respondWithError(w, http.StatusNotFound, "Tag is empty")
 		return
 	}
 	respondWithJSON(w, http.StatusOK, item)
@@ -132,12 +138,12 @@ func (a *App) updateTag(w http.ResponseWriter, r *http.Request) {
 
 		err := a.Conn.Write(vars["id"], value)
 		if err != nil {
-			respondWithError(w, http.StatusBadRequest, "value could not be written to tag")
+			respondWithError(w, http.StatusBadRequest, "Value could not be written to tag")
 			return
 		}
 		respondWithJSON(w, http.StatusOK, map[string]interface{}{"result": "updated"})
 	} else {
-		respondWithError(w, http.StatusBadRequest, "read-only")
+		respondWithError(w, http.StatusBadRequest, "Read-only")
 	}
 }
 

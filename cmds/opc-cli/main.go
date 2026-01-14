@@ -99,6 +99,7 @@ func main() {
 				fmt.Println(err)
 				os.Exit(1)
 			}
+			defer conn.Close()
 			fmt.Println(conn.Read())
 		},
 	}
@@ -123,6 +124,7 @@ func main() {
 				fmt.Println(err)
 				os.Exit(1)
 			}
+			defer conn.Close()
 			conn.Write(tag, value)
 		},
 	}
@@ -130,6 +132,10 @@ func main() {
 	var rootCmd = &cobra.Command{Use: "opc-cli"}
 
 	rootCmd.PersistentFlags().BoolVarP(&Debug, "debug", "d", false, "set OPC logging")
+
+	rootCmd.PersistentFlags().IntVar(&opc.OPCConfig.Mode, "mode", 0, "ReadModeMultiLowerBound1(0), ReadModeSingle(1), ReadModeMultiLowerBound0(2)")
+
+	rootCmd.PersistentFlags().Int32Var(&opc.OPCConfig.ReadSource, "readSource", 0, "OPCDevice(2) or OPCCache(1)")
 
 	rootCmd.AddCommand(cmdList, cmdInfo, cmdBrowse, cmdRead, cmdWrite)
 	rootCmd.Execute()

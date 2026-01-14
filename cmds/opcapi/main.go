@@ -5,7 +5,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -74,16 +73,30 @@ func main() {
 		nodes[i] = strings.Trim(nodes[i], " ")
 	}
 
-	fmt.Println("API starting with OPC", server, nodes, *addr)
+	log.Println("API starting with OPC", server, nodes, *addr)
+	log.Printf("Load Global Config %+v:\n", cfg.Config)
+
+	opc.OPCConfig.Mode = cfg.Config.Mode
+	if cfg.Config.ReadSource != 0 {
+		opc.OPCConfig.ReadSource = cfg.Config.ReadSource
+	}
+	opc.OPCConfig.ReadTagsAsServer = cfg.Config.ReadTagsAsServer
+	if cfg.Config.ReadTagsAsServer && cfg.Config.ServerReadPeriod > 0 {
+		opc.OPCConfig.ServerReadPeriod = cfg.Config.ServerReadPeriod
+	}
+	log.Printf("Load OPC Config:%+v\n", *opc.OPCConfig)
 
 	if cfg.Config.AllTags {
+		log.Println("Enable AllTags, so collecting all tags from server...")
 		tree, err := opc.CreateBrowser(server, nodes)
 		if err != nil {
 			log.Fatal(err)
 		}
 		cfg.Opc.Tags = opc.CollectTags(tree)
+		log.Printf("Collected %d tags from server\n", len(cfg.Opc.Tags))
 	}
 
+	log.Println("starting OPC Connection...")
 	client, err := opc.NewConnection(
 		server,
 		nodes,

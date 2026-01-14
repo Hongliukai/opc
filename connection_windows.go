@@ -246,7 +246,7 @@ func NewAutomationObject() *AutomationObject {
 
 	opc, err := unknown.QueryInterface(ole.IID_IDispatch)
 	if err != nil {
-		fmt.Println("Could not QueryInterface")
+		logger.Println("Could not QueryInterface")
 		return &AutomationObject{}
 	}
 	object := AutomationObject{
@@ -261,62 +261,232 @@ type AutomationGroup struct {
 	*AutomationItems
 }
 
-func (ag *AutomationGroup) syncRead() map[string]Item {
+// syncRead reads all items in the AutomationGroup in one call and returns a map of Items.
+func (ag *AutomationGroup) syncRead() (map[string]Item, error) {
+	count := len(ag.AutomationItems.itemsHandle)
+	var serverHandles []int32
+	var tags []string = make([]string, 0, count)
+	if count == 0 {
+		return make(map[string]Item), nil
+	}
+	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
+		// 如果是从1开始读取的模式(VB6 OPCDA)，则需要在数组开头多加一个空元素
+		serverHandles = make([]int32, 0, count+1)
+		serverHandles = append(serverHandles, 0)
+		for tag, serverHandle := range ag.AutomationItems.itemsHandle {
+			tags = append(tags, tag)
+			serverHandles = append(serverHandles, serverHandle)
+		}
+	} else if OPCConfig.Mode == ReadModeMultiLowerBound0 {
+		// 是从0开始编号的模式
+		serverHandles = make([]int32, 0, count)
+		for tag, serverHandle := range ag.AutomationItems.itemsHandle {
+			tags = append(tags, tag)
+			serverHandles = append(serverHandles, serverHandle)
+		}
+	} else {
+		return nil, errors.New("Unsupported ReadMode for sync read")
+	}
+
 	var saValues *ole.SafeArray
 	var saErrors *ole.SafeArray
+	var saQualities *ole.SafeArray
+	var saTimestamps *ole.SafeArray
 
 	vValues := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saValues))))
 	vErrors := ole.NewVariant(ole.VT_ARRAY|ole.VT_I4|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saErrors))))
+	vQualities := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saQualities))))
+	vTimestamps := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saTimestamps))))
 
-	count := len(ag.AutomationItems.itemsHandle)
-	logger.Printf("count: %v", count)
-	serverHandles := make([]int32, 0, count+1)
-	// append 0 to escape lbounded problem in VB6
-	serverHandles = append(serverHandles, 0)
-
-	tags := make([]string, 0, count)
-
-	for tag, serverHandle := range ag.AutomationItems.itemsHandle {
-		tags = append(tags, tag)
-		serverHandles = append(serverHandles, serverHandle)
-	}
-
-	logger.Printf("len(tags): %v", len(tags))
-	logger.Printf("opcGroup: %v, count: %v, serverHandles: %v, len(serverHandles): %v", ag.opcGroup, count, serverHandles, len(serverHandles))
-	_, err := oleutil.CallMethod(ag.opcGroup, "SyncRead", 2, count, serverHandles, vValues, vErrors)
+	logger.Printf("SyncRead %v tags from %v", count, GetReadSourceMeaning(OPCConfig.ReadSource))
+	_, err := oleutil.CallMethod(ag.opcGroup, "SyncRead", OPCConfig.ReadSource, count, serverHandles, vValues, vErrors, vQualities, vTimestamps)
 	if err != nil {
-		log.Println("SyncRead failed.", err)
-		return nil
-		// return errors.New("cannot sync read OPC Items")
+		return nil, errors.New("Cannot sync read OPC Items")
 	}
 
-	sac := &ole.SafeArrayConversion{Array: saValues}
-	defer sac.Release()
-	values := sac.ToValueArray()
+	var values []interface{}
+	var errorCodes []interface{}
+	var qualities []interface{}
+	var timestamps []interface{}
 
-	sac = &ole.SafeArrayConversion{Array: saErrors}
-	defer sac.Release()
-	errorCodes := sac.ToValueArray()
+	valueSac := &ole.SafeArrayConversion{Array: saValues}
+	defer valueSac.Release()
+	errorSac := &ole.SafeArrayConversion{Array: saErrors}
+	defer errorSac.Release()
+	qualitySac := &ole.SafeArrayConversion{Array: saQualities}
+	defer qualitySac.Release()
+	timestampSac := &ole.SafeArrayConversion{Array: saTimestamps}
+	defer timestampSac.Release()
+
+	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
+		// 如果是从1开始读取的模式(VB6 OPCDA)
+		values = valueSac.ToValueArrayWithOffset(1)
+		errorCodes = errorSac.ToValueArrayWithOffset(1)
+		qualities = qualitySac.ToValueArrayWithOffset(1)
+		timestamps = timestampSac.ToValueArrayWithOffset(1)
+	}
+	if OPCConfig.Mode == ReadModeMultiLowerBound0 {
+		// 是从0开始编号的模式(C# OPCDA)
+		values = valueSac.ToValueArray()
+		errorCodes = errorSac.ToValueArray()
+		qualities = qualitySac.ToValueArray()
+		timestamps = timestampSac.ToValueArray()
+	}
 
 	allTags := make(map[string]Item)
-
 	for i := 0; i < count; i++ {
 		if errorCode, ok := errorCodes[i].(int32); ok {
 			if errorCode != 0 {
-				logger.Fatalf("Read %v failed, cause: %v", tags[i], errorCode)
+				logger.Printf("Read %v failed, cause: %v", tags[i], GetErrorMessage(errorCode))
 				continue
 			}
-
 		} else {
-			logger.Fatalf("Parse errorCode failed, errorCode: %v", errorCodes[i])
+			logger.Printf("Read %v failed,, errorCode: %v", tags[i], errorCodes[i])
 			continue
 		}
 
-		allTags[tags[i]] = Item{
-			Value: values[i],
+		item := Item{
+			Value:     values[i],
+			Quality:   0,
+			Timestamp: time.Now(),
 		}
+		if i < len(qualities) {
+			item.Quality = ensureInt16(qualities[i])
+		}
+		if i < len(timestamps) {
+			item.Timestamp = ensureTimestamp(timestamps[i])
+		}
+		allTags[tags[i]] = item
 	}
-	return allTags
+	return allTags, nil
+}
+
+// syncReadTarget reads only the specified tags in targetTags and returns a map of Items.
+func (ag *AutomationGroup) syncReadTarget(targetTags []string) (map[string]Item, error) {
+	if len(targetTags) == 0 {
+		logger.Println("SyncRead No valid tags to read.")
+		return make(map[string]Item), nil
+	}
+	var serverHandles []int32
+	var tags []string
+	for _, tag := range targetTags {
+		if _, ok := ag.AutomationItems.itemsHandle[tag]; !ok {
+			logger.Printf("syncReadTarget Tag %s not found in itemsHandle.", tag)
+			continue
+		}
+		tags = append(tags, tag)
+	}
+	count := len(tags)
+	if count == 0 {
+		logger.Println("SyncRead No valid tags to read.")
+		return make(map[string]Item), nil
+	}
+	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
+		// 如果是从1开始读取的模式(VB6 OPCDA)，则需要在数组开头多加一个空元素
+		serverHandles = make([]int32, 0, count+1)
+		serverHandles = append(serverHandles, 0)
+		for _, tag := range tags {
+			serverHandles = append(serverHandles, ag.AutomationItems.itemsHandle[tag])
+		}
+	} else if OPCConfig.Mode == ReadModeMultiLowerBound0 {
+		// 是从0开始编号的模式
+		serverHandles = make([]int32, 0, count)
+		for _, tag := range tags {
+			serverHandles = append(serverHandles, ag.AutomationItems.itemsHandle[tag])
+		}
+	} else {
+		return nil, errors.New("syncReadTarget Unsupported ReadMode for sync read")
+	}
+
+	var saValues *ole.SafeArray
+	var saErrors *ole.SafeArray
+	var saQualities *ole.SafeArray
+	var saTimestamps *ole.SafeArray
+
+	vValues := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saValues))))
+	vErrors := ole.NewVariant(ole.VT_ARRAY|ole.VT_I4|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saErrors))))
+	vQualities := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saQualities))))
+	vTimestamps := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saTimestamps))))
+
+	logger.Printf("SyncRead %v tags from %v", count, GetReadSourceMeaning(OPCConfig.ReadSource))
+	_, err := oleutil.CallMethod(ag.opcGroup, "SyncRead", OPCConfig.ReadSource, count, serverHandles, vValues, vErrors, vQualities, vTimestamps)
+	if err != nil {
+		log.Println("SyncRead failed.", err)
+		return nil, errors.New("SyncRead cannot sync read OPC Items")
+	}
+
+	var values []interface{}
+	var errorCodes []interface{}
+	var qualities []interface{}
+	var timestamps []interface{}
+
+	valueSac := &ole.SafeArrayConversion{Array: saValues}
+	defer valueSac.Release()
+	errorSac := &ole.SafeArrayConversion{Array: saErrors}
+	defer errorSac.Release()
+	qualitySac := &ole.SafeArrayConversion{Array: saQualities}
+	defer qualitySac.Release()
+	timestampSac := &ole.SafeArrayConversion{Array: saTimestamps}
+	defer timestampSac.Release()
+
+	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
+		// 如果是从1开始读取的模式(VB6 OPCDA)
+		values = valueSac.ToValueArrayWithOffset(1)
+		errorCodes = errorSac.ToValueArrayWithOffset(1)
+		qualities = qualitySac.ToValueArrayWithOffset(1)
+		timestamps = timestampSac.ToValueArrayWithOffset(1)
+	}
+	if OPCConfig.Mode == ReadModeMultiLowerBound0 {
+		// 是从0开始编号的模式(C# OPCDA)
+		values = valueSac.ToValueArray()
+		errorCodes = errorSac.ToValueArray()
+		qualities = qualitySac.ToValueArray()
+		timestamps = timestampSac.ToValueArray()
+	}
+
+	allTags := make(map[string]Item)
+	for i := 0; i < count; i++ {
+		if errorCode, ok := errorCodes[i].(int32); ok {
+			if errorCode != 0 {
+				logger.Printf("SyncRead Read %v failed, cause: %v", tags[i], GetErrorMessage(errorCode))
+				continue
+			}
+		} else {
+			logger.Printf("SyncRead Read %v failed, errorCode: %v", tags[i], errorCodes[i])
+			continue
+		}
+		item := Item{
+			Value:     values[i],
+			Quality:   0,
+			Timestamp: time.Now(),
+		}
+		if i < len(qualities) {
+			item.Quality = ensureInt16(qualities[i])
+		}
+		if i < len(timestamps) {
+			item.Timestamp = ensureTimestamp(timestamps[i])
+		}
+		allTags[tags[i]] = item
+	}
+	return allTags, nil
+}
+
+func (ag *AutomationGroup) syncWriteTarget(tag string, value interface{}) error {
+	var serviceHandle int32
+	if v, ok := ag.AutomationItems.itemsHandle[tag]; !ok {
+		return errors.New("Tag not found in itemsHandle")
+	} else {
+		serviceHandle = v
+	}
+	opcItem, err := oleutil.CallMethod(ag.addItemObject, "GetOPCItem", serviceHandle)
+	if err != nil {
+		return errors.New("Write cannot Get OPC Item")
+	}
+	err = ag.writeToOpc(opcItem.ToIDispatch(), value)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // NewAutomationItems returns a new AutomationItems instance.
@@ -337,27 +507,37 @@ type AutomationItems struct {
 func (ai *AutomationItems) addSingle(tag string) error {
 	clientHandle := int32(1)
 	item, err := oleutil.CallMethod(ai.addItemObject, "AddItem", tag, clientHandle)
-	// item, err := oleutil.CallMethod(ai.addItemObject, "AddItem", tag, clientHandle)
 	if err != nil {
+		log.Println("AddItem call failed for tag:", tag, "error:", err)
 		return errors.New(tag + ":" + err.Error())
 	}
+	logger.Println("Added tag:", tag)
 	ai.items[tag] = item.ToIDispatch()
 	return nil
 }
 
+// addMulti adds multiple tags and returns an error.
 func (ai *AutomationItems) addMulti(tags []string) error {
-	if len(tags) == 0 {
-		return errors.New("标签列表为空")
-	}
-
 	count := len(tags)
+	var targetTags []string
+	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
+		// 如果是从1开始读取的模式(VB6 OPCDA)，则需要在数组开头多加一个""的元素
+		targetTags = make([]string, 0, len(tags)+1)
+		targetTags = append(targetTags, "")
+		targetTags = append(targetTags, tags...)
+	} else if OPCConfig.Mode == ReadModeMultiLowerBound0 {
+		// 是从0开始编号的模式(C# OPCDA)
+		targetTags = make([]string, 0, len(tags))
+		targetTags = append(targetTags, tags...)
+	} else {
+		return errors.New("Unsupported ReadMode for multi add")
+	}
 
 	clientHandles := make([]int32, count+1)
 	for i := range clientHandles {
-		clientHandles[i] = int32(i)
+		// 我们不使用clientHandles 读取数据，但是也建议从1开始编号，避免一些opc server的兼容性问题
+		clientHandles[i] = int32(i + 1)
 	}
-
-	tags = append([]string{""}, tags...)
 
 	var saServerHandles *ole.SafeArray
 	var saErrors *ole.SafeArray
@@ -365,63 +545,162 @@ func (ai *AutomationItems) addMulti(tags []string) error {
 	vServerHandles := ole.NewVariant(ole.VT_ARRAY|ole.VT_I4|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saServerHandles))))
 	vErrors := ole.NewVariant(ole.VT_ARRAY|ole.VT_I4|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saErrors))))
 
-	_, err := oleutil.CallMethod(ai.addItemObject, "AddItems", count, tags, clientHandles, vServerHandles, vErrors)
+	_, err := oleutil.CallMethod(ai.addItemObject, "AddItems", count, targetTags, clientHandles, vServerHandles, vErrors)
 	if err != nil {
 		return fmt.Errorf("Invoke AddItems failed: %v", err)
 	}
 
-	sac := &ole.SafeArrayConversion{Array: saServerHandles}
-	defer sac.Release()
-	serverHandles := sac.ToValueArray()
+	sacServer := &ole.SafeArrayConversion{Array: saServerHandles}
+	defer sacServer.Release()
+	var serverHandles []interface{}
 
-	sac = &ole.SafeArrayConversion{Array: saErrors}
-	defer sac.Release()
-	errorCodes := sac.ToValueArray()
+	sacError := &ole.SafeArrayConversion{Array: saErrors}
+	defer sacError.Release()
+	var errorCodes []interface{}
+
+	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
+		serverHandles = sacServer.ToValueArrayWithOffset(1)
+		errorCodes = sacError.ToValueArrayWithOffset(1)
+	}
+	if OPCConfig.Mode == ReadModeMultiLowerBound0 {
+		serverHandles = sacServer.ToValueArray()
+		errorCodes = sacError.ToValueArray()
+	}
 
 	for i := 0; i < count; i++ {
 		if errorCode, ok := errorCodes[i].(int32); ok {
 			if errorCode != 0 {
-				logger.Fatalf("AddItem %v failed", tags[i])
+				logger.Fatalf("Add Tag %v failed, because %v", tags[i], GetErrorMessage(errorCode))
 				continue
 			}
 		} else {
-			logger.Fatalf("Parse errorCode failed, errorCode: %v", errorCodes[i])
+			logger.Fatalf("Add Tag %v failed, errorCode: %v", tags[i], errorCodes[i])
 			continue
 		}
 
 		if serverHandle, ok := serverHandles[i].(int32); ok && serverHandle != 0 {
+			logger.Printf("Added tag: %v with serverHandle: %v", tags[i], serverHandle)
 			ai.itemsHandle[tags[i]] = serverHandle
 		} else {
-			logger.Printf("Parse serverHandle failed. serverHandle: %v", serverHandles[i])
+			logger.Fatalf("Add Tag %v failed,Parse serverHandle failed. serverHandle: %v", tags[i], serverHandles[i])
 		}
 	}
 
 	return nil
 }
 
+func (ai *AutomationItems) removeTargetInMultiAddTag(targetTags []string) error {
+	var serverHandles []int32
+	var targetServerHandles []int32
+	for _, tag := range targetTags {
+		if v, ok := ai.itemsHandle[tag]; ok {
+			targetServerHandles = append(targetServerHandles, v)
+		}
+	}
+	count := len(targetServerHandles)
+	if count == 0 {
+		logger.Println("No tags to remove.")
+		return nil
+	}
+
+	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
+		// 如果是从1开始读取的模式(VB6 OPCDA)，则需要在数组开头多加一个空元素
+		serverHandles = make([]int32, 0, count+1)
+		serverHandles = append(serverHandles, 0)
+		serverHandles = append(serverHandles, targetServerHandles...)
+	} else if OPCConfig.Mode == ReadModeMultiLowerBound0 {
+		// 是从0开始编号的模式
+		serverHandles = make([]int32, 0, count)
+		serverHandles = append(serverHandles, targetServerHandles...)
+	} else {
+		return errors.New("Unsupported ReadMode")
+	}
+	var saErrors *ole.SafeArray
+
+	vErrors := ole.NewVariant(ole.VT_ARRAY|ole.VT_I4|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saErrors))))
+
+	_, err := oleutil.CallMethod(ai.addItemObject, "Remove", count, serverHandles, vErrors)
+	if err != nil {
+		return errors.New("cannot remove OPC Items")
+	}
+	var errorCodes []interface{}
+	errorSac := &ole.SafeArrayConversion{Array: saErrors}
+	defer errorSac.Release()
+	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
+		// 如果是从1开始读取的模式(VB6 OPCDA)
+		errorCodes = errorSac.ToValueArrayWithOffset(1)
+	}
+	if OPCConfig.Mode == ReadModeMultiLowerBound0 {
+		// 是从0开始编号的模式(C# OPCDA)
+		errorCodes = errorSac.ToValueArray()
+	}
+	for i := 0; i < count; i++ {
+		if errorCode, ok := errorCodes[i].(int32); ok {
+			if errorCode != 0 {
+				logger.Printf("remove %v failed, cause: %v", targetTags[i], GetErrorMessage(errorCode))
+			} else {
+				logger.Printf("removed %v successfully,code: %v", targetTags[i], errorCode)
+			}
+			continue
+		} else {
+			logger.Printf("remove %v failed, errorCode: %v", targetTags[i], errorCodes[i])
+			continue
+		}
+	}
+	return nil
+}
+
 // Add accepts a variadic parameters of tags.
 func (ai *AutomationItems) Add(tags ...string) error {
-	return ai.addMulti(tags)
-	// var errResult string
-	// for _, tag := range tags {
-	// 	err := ai.addSingle(tag)
-	// 	if err != nil {
-	// 		errResult = err.Error() + errResult
-	// 	}
-	// }
-	// if errResult == "" {
-	// 	return nil
-	// }
-	// return errors.New(errResult)
+	if len(tags) == 0 {
+		logger.Println("No tags to add.")
+		return nil
+	}
+	if OPCConfig.Mode == ReadModeSingle {
+		var errResult string
+		for _, tag := range tags {
+			err := ai.addSingle(tag)
+			if err != nil {
+				errResult = err.Error() + errResult
+			}
+		}
+		if errResult != "" {
+			return errors.New(errResult)
+		}
+		logger.Println("ReadModeSingle Mode Add Items Complete ,Print All:")
+		for v, _ := range ai.items {
+			logger.Println("\t", v)
+		}
+		return nil
+	}
+	err := ai.addMulti(tags)
+	if err != nil {
+		return err
+	}
+	logger.Println("ReadModeMulti Mode Add Items Complete ,Print All:")
+	for k, v := range ai.itemsHandle {
+		logger.Printf("\t tag: %v handler:%v\n", k, v)
+	}
+	return nil
+
 }
 
 // Remove removes the tag.
 func (ai *AutomationItems) Remove(tag string) {
-	item, ok := ai.items[tag]
-	if ok {
-		item.Release()
+	logger.Printf("Removing tag %s", tag)
+	if OPCConfig.Mode == ReadModeSingle {
+		item, ok := ai.items[tag]
+		if ok {
+			item.Release()
+			delete(ai.items, tag)
+		}
+		return
 	}
-	delete(ai.items, tag)
+	_, ok := ai.itemsHandle[tag]
+	if ok {
+		ai.removeTargetInMultiAddTag([]string{tag})
+		delete(ai.itemsHandle, tag)
+	}
 }
 
 /*
@@ -438,6 +717,17 @@ func ensureInt16(q interface{}) int16 {
 	return 0
 }
 
+/*
+ * FIX:
+ * some opc servers sometimes returns an int32 Quality, that produces panic
+ */
+func ensureTimestamp(q interface{}) time.Time {
+	if t, ok := q.(time.Time); ok {
+		return t
+	}
+	return time.Now()
+}
+
 // readFromOPC reads from the server and returns an Item and error.
 func (ai *AutomationItems) readFromOpc(opcitem *ole.IDispatch) (Item, error) {
 	v := ole.NewVariant(ole.VT_R4, 0)
@@ -446,7 +736,7 @@ func (ai *AutomationItems) readFromOpc(opcitem *ole.IDispatch) (Item, error) {
 
 	//read tag from opc server and monitor duration in seconds
 	t := time.Now()
-	_, err := oleutil.CallMethod(opcitem, "Read", OPCCache, &v, &q, &ts)
+	_, err := oleutil.CallMethod(opcitem, "Read", OPCConfig.ReadSource, &v, &q, &ts)
 	opcReadsDuration.Observe(time.Since(t).Seconds())
 
 	if err != nil {
@@ -476,11 +766,17 @@ func (ai *AutomationItems) writeToOpc(opcitem *ole.IDispatch, value interface{})
 
 // Close closes the OLE objects in AutomationItems.
 func (ai *AutomationItems) Close() {
+	logger.Println("Releasing AutomationItems resources.")
 	if ai != nil {
 		for key, opcitem := range ai.items {
 			opcitem.Release()
 			delete(ai.items, key)
 		}
+		tags := make([]string, 0, len(ai.itemsHandle))
+		for tag, _ := range ai.itemsHandle {
+			tags = append(tags, tag)
+		}
+		ai.removeTargetInMultiAddTag(tags)
 		ai.addItemObject.Release()
 	}
 }
@@ -507,17 +803,32 @@ type opcConnectionImpl struct {
 func (conn *opcConnectionImpl) ReadItem(tag string) Item {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	opcitem, ok := conn.AutomationItems.items[tag]
+	if OPCConfig.Mode == ReadModeSingle {
+		opcitem, ok := conn.AutomationItems.items[tag]
+		if ok {
+			item, err := conn.AutomationItems.readFromOpc(opcitem)
+			if err == nil {
+				return item
+			}
+			logger.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
+			conn.fix()
+		} else {
+			logger.Printf("Tag %s not found. Add it first before reading it.", tag)
+		}
+		return Item{}
+	}
+	_, ok := conn.AutomationItems.itemsHandle[tag]
 	if ok {
-		item, err := conn.AutomationItems.readFromOpc(opcitem)
+		items, err := conn.AutomationGroup.syncReadTarget([]string{tag})
 		if err == nil {
-			return item
+			return items[tag]
 		}
 		logger.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
 		conn.fix()
 	} else {
 		logger.Printf("Tag %s not found. Add it first before reading it.", tag)
 	}
+
 	return Item{}
 }
 
@@ -525,9 +836,18 @@ func (conn *opcConnectionImpl) ReadItem(tag string) Item {
 func (conn *opcConnectionImpl) Write(tag string, value interface{}) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	opcitem, ok := conn.AutomationItems.items[tag]
+	logger.Printf("Writing value %v to tag %s", value, tag)
+	if OPCConfig.Mode == ReadModeSingle {
+		opcitem, ok := conn.AutomationItems.items[tag]
+		if ok {
+			return conn.AutomationItems.writeToOpc(opcitem, value)
+		}
+		logger.Printf("Tag %s not found. Add it first before writing to it.", tag)
+		return errors.New("No Write performed")
+	}
+	_, ok := conn.AutomationItems.itemsHandle[tag]
 	if ok {
-		return conn.AutomationItems.writeToOpc(opcitem, value)
+		return conn.AutomationGroup.syncWriteTarget(tag, value)
 	}
 	logger.Printf("Tag %s not found. Add it first before writing to it.", tag)
 	return errors.New("No Write performed")
@@ -537,28 +857,9 @@ func (conn *opcConnectionImpl) Write(tag string, value interface{}) error {
 func (conn *opcConnectionImpl) Read() map[string]Item {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.AutomationGroup.syncRead()
-
-	// allTags := make(map[string]Item)
-	// for tag, opcitem := range conn.AutomationItems.items {
-	// 	item, err := conn.AutomationItems.readFromOpc(opcitem)
-	// 	if err != nil {
-	// 		logger.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
-	// 		conn.fix()
-	// 		break
-	// 	}
-	// 	allTags[tag] = item
-	// }
-	// return allTags
-}
-
-func (conn *opcConnectionImpl) ReadItems(tags ...string) map[string]Item {
-	conn.mu.Lock()
-	defer conn.mu.Unlock()
-	allTags := make(map[string]Item)
-	for _, tag := range tags {
-		opcitem, ok := conn.AutomationItems.items[tag]
-		if ok {
+	if OPCConfig.Mode == ReadModeSingle {
+		allTags := make(map[string]Item)
+		for tag, opcitem := range conn.AutomationItems.items {
 			item, err := conn.AutomationItems.readFromOpc(opcitem)
 			if err != nil {
 				logger.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
@@ -566,12 +867,45 @@ func (conn *opcConnectionImpl) ReadItems(tags ...string) map[string]Item {
 				break
 			}
 			allTags[tag] = item
-		} else {
-			logger.Printf("Tag %s not found. Add it first before reading it.", tag)
-			break
 		}
+		return allTags
 	}
-	return allTags
+	data, err := conn.AutomationGroup.syncRead()
+	if err != nil {
+		logger.Printf("Errors during sync read: %v. Trying to fix.", err)
+		conn.fix()
+	}
+	return data
+}
+
+func (conn *opcConnectionImpl) ReadItems(tags ...string) map[string]Item {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if OPCConfig.Mode == ReadModeSingle {
+		allTags := make(map[string]Item)
+		for _, tag := range tags {
+			opcitem, ok := conn.AutomationItems.items[tag]
+			if ok {
+				item, err := conn.AutomationItems.readFromOpc(opcitem)
+				if err != nil {
+					logger.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
+					conn.fix()
+					break
+				}
+				allTags[tag] = item
+			} else {
+				logger.Printf("Tag %s not found. Add it first before reading it.", tag)
+				break
+			}
+		}
+		return allTags
+	}
+	data, err := conn.AutomationGroup.syncReadTarget(tags)
+	if err != nil {
+		logger.Printf("Errors during sync read: %v. Trying to fix.", err)
+		conn.fix()
+	}
+	return data
 }
 
 // Tags returns the currently active tags
@@ -579,6 +913,9 @@ func (conn *opcConnectionImpl) Tags() []string {
 	var tags []string
 	if conn.AutomationItems != nil {
 		for tag, _ := range conn.AutomationItems.items {
+			tags = append(tags, tag)
+		}
+		for tag, _ := range conn.AutomationItems.itemsHandle {
 			tags = append(tags, tag)
 		}
 	}
@@ -600,8 +937,9 @@ func (conn *opcConnectionImpl) fix() {
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
-			if conn.Add(tags...) == nil {
-				logger.Printf("Added %d tags", len(tags))
+			tagErr := conn.Add(tags...)
+			if tagErr != nil {
+				logger.Printf("fix Connection:Failed to add tags after reconnecting: %v", tagErr)
 			}
 			break
 		}
@@ -611,6 +949,7 @@ func (conn *opcConnectionImpl) fix() {
 // Close closes the embedded types.
 func (conn *opcConnectionImpl) Close() {
 	conn.mu.Lock()
+	logger.Println("Cleaning OPC connection.")
 	defer conn.mu.Unlock()
 	if conn.AutomationObject != nil {
 		conn.AutomationObject.Close()
@@ -618,6 +957,7 @@ func (conn *opcConnectionImpl) Close() {
 	if conn.AutomationItems != nil {
 		conn.AutomationItems.Close()
 	}
+	logger.Println("OPC connection closed.")
 }
 
 // NewConnection establishes a connection to the OpcServer object.
@@ -627,10 +967,10 @@ func NewConnection(server string, nodes []string, tags []string) (Connection, er
 	if err != nil {
 		return &opcConnectionImpl{}, err
 	}
-	logger.Printf("tags: %v", tags)
+	logger.Printf("Request to add tags:")
 	err = items.Add(tags...)
-	logger.Println("all tags added")
 	if err != nil {
+		logger.Println("Adding tags failed:", err)
 		return &opcConnectionImpl{}, err
 	}
 	conn := opcConnectionImpl{
