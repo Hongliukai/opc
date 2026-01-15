@@ -20,6 +20,8 @@ func (es *emptyServer) Remove(string)                   {}
 func (es *emptyServer) Write(string, interface{}) error { return nil }
 func (es *emptyServer) Close()                          {}
 func (es *emptyServer) Tags() []string                  { return []string{} }
+func (es *emptyServer) SyncCache()                      {}
+func (es *emptyServer) RemoveCache([]string)            {}
 
 // OpcMockServerStatic implements an OPC Server that returns the index value plus 1 for each tag.
 type OpcMockServerStatic struct {

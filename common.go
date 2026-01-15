@@ -14,17 +14,17 @@ const (
 )
 
 type Config struct {
-	Mode             int
-	ReadSource       int32 // OPCDevice or OPCCache
-	ReadTagsAsServer bool
-	ServerReadPeriod time.Duration
+	Mode                int
+	ReadSource          int32 // OPCDevice or OPCCache
+	TagsCache           bool
+	TagsCacheSyncPeriod time.Duration
 }
 
 var OPCConfig = &Config{
-	Mode:             ReadModeSingle,
-	ReadSource:       OPCCache,
-	ReadTagsAsServer: false,
-	ServerReadPeriod: 1 * time.Minute,
+	Mode:                ReadModeSingle,
+	ReadSource:          OPCCache,
+	TagsCache:           false,
+	TagsCacheSyncPeriod: 1 * time.Minute,
 }
 
 type ErrorCode struct {

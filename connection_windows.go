@@ -508,6 +508,9 @@ func (ai *AutomationItems) addSingle(tag string) error {
 // addMulti adds multiple tags and returns an error.
 func (ai *AutomationItems) addMulti(tags []string) error {
 	count := len(tags)
+	if count == 0 {
+		return nil
+	}
 	var targetTags []string
 	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
 		// 如果是从1开始读取的模式(VB6 OPCDA)，则需要在数组开头多加一个""的元素
@@ -646,8 +649,20 @@ func (ai *AutomationItems) Add(tags ...string) error {
 		return nil
 	}
 	if OPCConfig.Mode == ReadModeSingle {
-		var errResult string
+		addTags := make([]string, 0)
 		for _, tag := range tags {
+			if _, ok := ai.items[tag]; ok {
+				logger.Printf("Tag %s already exists, skip adding.", tag)
+				continue
+			}
+			addTags = append(addTags, tag)
+		}
+		if len(addTags) == 0 {
+			logger.Println("No new tags to add.")
+			return nil
+		}
+		var errResult string
+		for _, tag := range addTags {
 			err := ai.addSingle(tag)
 			if err != nil {
 				errResult = err.Error() + errResult
@@ -662,7 +677,19 @@ func (ai *AutomationItems) Add(tags ...string) error {
 		}
 		return nil
 	}
-	err := ai.addMulti(tags)
+	addTags := make([]string, 0)
+	for _, tag := range tags {
+		if _, ok := ai.itemsHandle[tag]; ok {
+			logger.Printf("Tag %s already exists, skip adding.", tag)
+			continue
+		}
+		addTags = append(addTags, tag)
+	}
+	if len(addTags) == 0 {
+		logger.Println("No new tags to add.")
+		return nil
+	}
+	err := ai.addMulti(addTags)
 	if err != nil {
 		return err
 	}
@@ -825,6 +852,72 @@ func NewAutomationItems(opcitems *ole.IDispatch) *AutomationItems {
 	return &ai
 }
 
+type opcDataCache struct {
+	tagsDataCache map[string]Item
+	mu            sync.RWMutex
+	syncLock      sync.Mutex
+}
+
+// readDataCacheSingle reads a single tag from the cache.
+func (cache *opcDataCache) readDataCacheSingle(tag string) (Item, bool) {
+	cache.mu.RLock()
+	defer cache.mu.RUnlock()
+	if cache.tagsDataCache == nil {
+		cache.tagsDataCache = make(map[string]Item)
+	}
+	item, found := cache.tagsDataCache[tag]
+	return item, found
+}
+
+// readDataCache reads multiple tags from the cache. If tags is nil or empty, all tags are returned.
+func (cache *opcDataCache) readDataCache(tags []string) map[string]Item {
+	cache.mu.RLock()
+	defer cache.mu.RUnlock()
+	if cache.tagsDataCache == nil {
+		cache.tagsDataCache = make(map[string]Item)
+	}
+	allTags := make(map[string]Item)
+	if tags == nil || len(tags) == 0 {
+		for tag, item := range cache.tagsDataCache {
+			allTags[tag] = item
+		}
+		return allTags
+	}
+	for _, tag := range tags {
+		if item, found := cache.tagsDataCache[tag]; found {
+			allTags[tag] = item
+		} else {
+			logger.Printf("Tag %s not found in cache.", tag)
+		}
+	}
+	return allTags
+}
+
+// writeDataCache writes multiple tags to the cache.
+func (cache *opcDataCache) writeDataCache(target map[string]Item) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.tagsDataCache == nil {
+		cache.tagsDataCache = make(map[string]Item)
+	}
+	for tag, item := range target {
+		cache.tagsDataCache[tag] = item
+	}
+}
+
+func (cache *opcDataCache) removeDataCache(tags []string) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.tagsDataCache == nil {
+		cache.tagsDataCache = make(map[string]Item)
+	}
+	for _, tag := range tags {
+		if _, found := cache.tagsDataCache[tag]; found {
+			delete(cache.tagsDataCache, tag)
+		}
+	}
+}
+
 // opcRealServer implements the Connection interface.
 // It has the AutomationObject embedded for connecting to the server
 // and an AutomationItems to facilitate the OPC items bookkeeping.
@@ -835,6 +928,7 @@ type opcConnectionImpl struct {
 	Server string
 	Nodes  []string
 	mu     sync.Mutex
+	Cache  *opcDataCache
 }
 
 // ReadItem returns an Item for a specific tag.
@@ -844,8 +938,20 @@ func (conn *opcConnectionImpl) ReadItem(tag string) Item {
 	if OPCConfig.Mode == ReadModeSingle {
 		opcitem, ok := conn.AutomationItems.items[tag]
 		if ok {
+			if OPCConfig.TagsCache {
+				if item, found := conn.Cache.readDataCacheSingle(tag); found {
+					logger.Printf("Use Tags Cache, Returning Tag %s  cached value.", tag)
+					return item
+				} else {
+					logger.Printf("Use Tags Cache, Tag %s not found in cache. Reading from server.", tag)
+				}
+			}
 			item, err := conn.AutomationItems.readFromOpc(opcitem)
 			if err == nil {
+				if OPCConfig.TagsCache {
+					logger.Printf("Use Tags Cache, write Tags Cache, Writing Tag %s to cache.", tag)
+					conn.Cache.writeDataCache(map[string]Item{tag: item})
+				}
 				return item
 			}
 			logger.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
@@ -857,8 +963,20 @@ func (conn *opcConnectionImpl) ReadItem(tag string) Item {
 	}
 	_, ok := conn.AutomationItems.itemsHandle[tag]
 	if ok {
+		if OPCConfig.TagsCache {
+			if item, found := conn.Cache.readDataCacheSingle(tag); found {
+				logger.Printf("Use Tags Cache, Returning Tag %s  cached value.", tag)
+				return item
+			} else {
+				logger.Printf("Use Tags Cache, Tag %s not found in cache. Reading from server.", tag)
+			}
+		}
 		items, err := conn.AutomationGroup.syncReadTarget([]string{tag})
 		if err == nil {
+			if OPCConfig.TagsCache {
+				logger.Printf("Use Tags Cache, write Tags Cache, Writing Tag %s to cache.", tag)
+				conn.Cache.writeDataCache(map[string]Item{tag: items[tag]})
+			}
 			return items[tag]
 		}
 		logger.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
@@ -897,6 +1015,15 @@ func (conn *opcConnectionImpl) Read() map[string]Item {
 	defer conn.mu.Unlock()
 	if OPCConfig.Mode == ReadModeSingle {
 		allTags := make(map[string]Item)
+		if OPCConfig.TagsCache {
+			data := conn.Cache.readDataCache(nil)
+			if len(data) > 0 {
+				logger.Println("Use Tags Cache, Returning all tags from cache.")
+				return data
+			} else {
+				logger.Println("Use Tags Cache, No tags found in cache. Reading from server.")
+			}
+		}
 		for tag, opcitem := range conn.AutomationItems.items {
 			item, err := conn.AutomationItems.readFromOpc(opcitem)
 			if err != nil {
@@ -906,12 +1033,28 @@ func (conn *opcConnectionImpl) Read() map[string]Item {
 			}
 			allTags[tag] = item
 		}
+		if OPCConfig.TagsCache {
+			conn.Cache.writeDataCache(allTags)
+		}
 		return allTags
+	}
+	if OPCConfig.TagsCache {
+		data := conn.Cache.readDataCache(nil)
+		if len(data) > 0 {
+			logger.Println("Use Tags Cache, Returning all tags from cache.")
+			return data
+		} else {
+			logger.Println("Use Tags Cache, No tags found in cache. Reading from server.")
+		}
 	}
 	data, err := conn.AutomationGroup.syncRead()
 	if err != nil {
 		logger.Printf("Errors during sync read: %v. Trying to fix.", err)
 		conn.fix()
+	}
+	if OPCConfig.TagsCache {
+		logger.Println("Use Tags Cache, Writing all tags to cache.")
+		conn.Cache.writeDataCache(data)
 	}
 	return data
 }
@@ -920,6 +1063,15 @@ func (conn *opcConnectionImpl) ReadItems(tags ...string) map[string]Item {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if OPCConfig.Mode == ReadModeSingle {
+		if OPCConfig.TagsCache {
+			data := conn.Cache.readDataCache(tags)
+			if len(data) > 0 {
+				logger.Println("Use Tags Cache, Returning all tags from cache.")
+				return data
+			} else {
+				logger.Println("Use Tags Cache, No tags found in cache. Reading from server.")
+			}
+		}
 		allTags := make(map[string]Item)
 		for _, tag := range tags {
 			opcitem, ok := conn.AutomationItems.items[tag]
@@ -936,12 +1088,29 @@ func (conn *opcConnectionImpl) ReadItems(tags ...string) map[string]Item {
 				continue
 			}
 		}
+		if OPCConfig.TagsCache {
+			logger.Println("Use Tags Cache, Writing all tags to cache.")
+			conn.Cache.writeDataCache(allTags)
+		}
 		return allTags
+	}
+	if OPCConfig.TagsCache {
+		data := conn.Cache.readDataCache(tags)
+		if len(data) > 0 {
+			logger.Println("Use Tags Cache, Returning all tags from cache.")
+			return data
+		} else {
+			logger.Println("Use Tags Cache, No tags found in cache. Reading from server.")
+		}
 	}
 	data, err := conn.AutomationGroup.syncReadTarget(tags)
 	if err != nil {
 		logger.Printf("Errors during sync read: %v. Trying to fix.", err)
 		conn.fix()
+	}
+	if OPCConfig.TagsCache {
+		logger.Println("Use Tags Cache, Writing all tags to cache.")
+		conn.Cache.writeDataCache(data)
 	}
 	return data
 }
@@ -1008,7 +1177,60 @@ func (conn *opcConnectionImpl) Close() {
 	case <-time.After(10 * time.Second):
 		logger.Println("Timeout while closing OPC connection.")
 	}
+}
 
+func (conn *opcConnectionImpl) SyncCache() {
+	lock := conn.Cache.syncLock.TryLock()
+	if lock {
+		defer conn.Cache.syncLock.Unlock()
+	} else {
+		logger.Println("Previous Tags Cache sync is still running, skipping this sync.")
+	}
+	logger.Printf("Starting Tags Cache On %v ,Period %v", time.Now().Format(time.RFC3339), OPCConfig.TagsCacheSyncPeriod)
+	if OPCConfig.Mode == ReadModeSingle {
+		allTags := make(map[string]Item)
+		for tag, opcitem := range conn.AutomationItems.items {
+			item, err := conn.AutomationItems.readFromOpc(opcitem)
+			if err != nil {
+				logger.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
+				conn.fix()
+				break
+			}
+			allTags[tag] = item
+		}
+		conn.Cache.writeDataCache(allTags)
+		return
+	}
+	data, err := conn.AutomationGroup.syncRead()
+	if err != nil {
+		logger.Printf("Errors during sync read: %v. Trying to fix.", err)
+		conn.fix()
+	}
+	conn.Cache.writeDataCache(data)
+}
+
+func (conn *opcConnectionImpl) RemoveCache(tags []string) {
+	conn.Cache.removeDataCache(tags)
+
+}
+
+func (conn *opcConnectionImpl) startCache() {
+	timeD := 1 * time.Minute
+	if OPCConfig.TagsCacheSyncPeriod != 0 {
+		timeD = OPCConfig.TagsCacheSyncPeriod
+	} else {
+		logger.Println("TagsCacheSyncPeriod is 0, setting to default 1 minute.")
+	}
+	go conn.SyncCache()
+	ticker := time.NewTicker(timeD)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				go conn.SyncCache()
+			}
+		}
+	}()
 }
 
 // NewConnection establishes a connection to the OpcServer object.
@@ -1030,8 +1252,14 @@ func NewConnection(server string, nodes []string, tags []string) (Connection, er
 		AutomationItems:  items,
 		Server:           server,
 		Nodes:            nodes,
+		Cache: &opcDataCache{
+			tagsDataCache: make(map[string]Item),
+		},
 	}
-
+	if OPCConfig.TagsCache {
+		logger.Println("Tags Cache is enabled.")
+		go conn.startCache()
+	}
 	return &conn, nil
 }
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
@@ -22,14 +21,14 @@ type App struct {
 // Config determines what services shall be exposed
 // through the App
 type Config struct {
-	WriteTag         bool          `toml:"allow_write"`
-	AddTag           bool          `toml:"allow_add"`
-	DeleteTag        bool          `toml:"allow_remove"`
-	AllTags          bool          `toml:"all_tags"`
-	Mode             int           `toml:"mode"`
-	ReadSource       int32         `toml:"read_source"`
-	ReadTagsAsServer bool          `toml:"read_tags_as_server"`
-	ServerReadPeriod time.Duration `toml:"server_read_period"`
+	WriteTag            bool   `toml:"allow_write"`
+	AddTag              bool   `toml:"allow_add"`
+	DeleteTag           bool   `toml:"allow_remove"`
+	AllTags             bool   `toml:"all_tags"`
+	Mode                int    `toml:"mode"`
+	ReadSource          int32  `toml:"read_source"`
+	TagsCache           bool   `toml:"tags_cache"`
+	TagsCacheSyncPeriod string `toml:"tags_cache_sync_period"`
 }
 
 // Initialize sets OPC connection and creates routes
@@ -96,6 +95,9 @@ func (a *App) createTag(w http.ResponseWriter, r *http.Request) {
 			respondWithError(w, http.StatusBadRequest, "Did not add tags")
 			return
 		}
+		if opc.OPCConfig.TagsCache {
+			go a.Conn.SyncCache()
+		}
 		respondWithJSON(w, http.StatusCreated, map[string]interface{}{"result": "created"})
 	} else {
 		respondWithError(w, http.StatusBadRequest, "No additions allowed")
@@ -119,6 +121,9 @@ func (a *App) deleteTag(w http.ResponseWriter, r *http.Request) {
 	if a.Config.DeleteTag {
 		vars := mux.Vars(r)
 		a.Conn.Remove(vars["id"])
+		if opc.OPCConfig.TagsCache {
+			go a.Conn.RemoveCache([]string{vars["id"]})
+		}
 		respondWithJSON(w, http.StatusOK, map[string]interface{}{"result": "removed"})
 	} else {
 		respondWithError(w, http.StatusBadRequest, "deletions not allowed")

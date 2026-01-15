@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/konimarti/opc"
@@ -82,9 +83,13 @@ func main() {
 	if cfg.Config.ReadSource != 0 {
 		opc.OPCConfig.ReadSource = cfg.Config.ReadSource
 	}
-	opc.OPCConfig.ReadTagsAsServer = cfg.Config.ReadTagsAsServer
-	if cfg.Config.ReadTagsAsServer && cfg.Config.ServerReadPeriod > 0 {
-		opc.OPCConfig.ServerReadPeriod = cfg.Config.ServerReadPeriod
+	opc.OPCConfig.TagsCache = cfg.Config.TagsCache
+	if cfg.Config.TagsCache && cfg.Config.TagsCacheSyncPeriod != "" {
+		t, err := time.ParseDuration(cfg.Config.TagsCacheSyncPeriod)
+		if err != nil {
+			log.Fatalf("invalid TagsCacheSyncPeriod duration format: %v", err)
+		}
+		opc.OPCConfig.TagsCacheSyncPeriod = t
 	}
 	log.Printf("Load OPC Config:%+v\n", *opc.OPCConfig)
 
