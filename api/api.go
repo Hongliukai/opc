@@ -68,10 +68,13 @@ func (a *App) getTags(w http.ResponseWriter, r *http.Request) {
 
 	object := make(map[string]interface{})
 	for tag, val := range tags {
-		object[tag] = val.Value
-		object[tag+"_time"] = val.Timestamp
+		if val.Good() {
+			object[tag] = val.Value
+			object[tag+"_time"] = val.Timestamp
+		} else {
+			log.Printf("tag %s has bad quality: %d ,value: %v timestamp: %v", tag, val.Quality, val.Value, val.Timestamp)
+		}
 	}
-
 	respondWithJSON(w, http.StatusOK, object)
 }
 

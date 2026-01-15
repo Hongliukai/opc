@@ -28,4 +28,4 @@ require (
 	google.golang.org/protobuf v1.31.0 // indirect
 )
 
-replace github.com/go-ole/go-ole => github.com/Hongliukai/go-ole v0.0.0-20260113025503-d183342b384e
+replace github.com/go-ole/go-ole => github.com/Hongliukai/go-ole v0.0.0-20260115020739-c4d9c981447e

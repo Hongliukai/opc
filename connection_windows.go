@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sync"
 	"time"
 	"unsafe"
@@ -290,16 +291,14 @@ func (ag *AutomationGroup) syncRead() (map[string]Item, error) {
 
 	var saValues *ole.SafeArray
 	var saErrors *ole.SafeArray
-	var saQualities *ole.SafeArray
-	var saTimestamps *ole.SafeArray
+	var vQualities ole.VARIANT
+	var vTimestamps ole.VARIANT
 
 	vValues := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saValues))))
 	vErrors := ole.NewVariant(ole.VT_ARRAY|ole.VT_I4|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saErrors))))
-	vQualities := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saQualities))))
-	vTimestamps := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saTimestamps))))
 
 	logger.Printf("SyncRead %v tags from %v", count, GetReadSourceMeaning(OPCConfig.ReadSource))
-	_, err := oleutil.CallMethod(ag.opcGroup, "SyncRead", OPCConfig.ReadSource, count, serverHandles, vValues, vErrors, vQualities, vTimestamps)
+	_, err := oleutil.CallMethod(ag.opcGroup, "SyncRead", OPCConfig.ReadSource, count, serverHandles, vValues, vErrors, &vQualities, &vTimestamps)
 	if err != nil {
 		return nil, errors.New("Cannot sync read OPC Items")
 	}
@@ -313,24 +312,20 @@ func (ag *AutomationGroup) syncRead() (map[string]Item, error) {
 	defer valueSac.Release()
 	errorSac := &ole.SafeArrayConversion{Array: saErrors}
 	defer errorSac.Release()
-	qualitySac := &ole.SafeArrayConversion{Array: saQualities}
-	defer qualitySac.Release()
-	timestampSac := &ole.SafeArrayConversion{Array: saTimestamps}
-	defer timestampSac.Release()
 
 	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
 		// 如果是从1开始读取的模式(VB6 OPCDA)
 		values = valueSac.ToValueArrayWithOffset(1)
 		errorCodes = errorSac.ToValueArrayWithOffset(1)
-		qualities = qualitySac.ToValueArrayWithOffset(1)
-		timestamps = timestampSac.ToValueArrayWithOffset(1)
+		qualities = vQualities.ToArray().ToValueArrayWithOffset(1)
+		timestamps = vTimestamps.ToArray().ToValueArrayWithOffset(1)
 	}
 	if OPCConfig.Mode == ReadModeMultiLowerBound0 {
 		// 是从0开始编号的模式(C# OPCDA)
 		values = valueSac.ToValueArray()
 		errorCodes = errorSac.ToValueArray()
-		qualities = qualitySac.ToValueArray()
-		timestamps = timestampSac.ToValueArray()
+		qualities = vQualities.ToArray().ToValueArray()
+		timestamps = vTimestamps.ToArray().ToValueArray()
 	}
 
 	allTags := make(map[string]Item)
@@ -400,16 +395,14 @@ func (ag *AutomationGroup) syncReadTarget(targetTags []string) (map[string]Item,
 
 	var saValues *ole.SafeArray
 	var saErrors *ole.SafeArray
-	var saQualities *ole.SafeArray
-	var saTimestamps *ole.SafeArray
+	var vQualities ole.VARIANT
+	var vTimestamps ole.VARIANT
 
 	vValues := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saValues))))
 	vErrors := ole.NewVariant(ole.VT_ARRAY|ole.VT_I4|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saErrors))))
-	vQualities := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saQualities))))
-	vTimestamps := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, int64(uintptr(unsafe.Pointer(&saTimestamps))))
 
 	logger.Printf("SyncRead %v tags from %v", count, GetReadSourceMeaning(OPCConfig.ReadSource))
-	_, err := oleutil.CallMethod(ag.opcGroup, "SyncRead", OPCConfig.ReadSource, count, serverHandles, vValues, vErrors, vQualities, vTimestamps)
+	_, err := oleutil.CallMethod(ag.opcGroup, "SyncRead", OPCConfig.ReadSource, count, serverHandles, vValues, vErrors, &vQualities, &vTimestamps)
 	if err != nil {
 		log.Println("SyncRead failed.", err)
 		return nil, errors.New("SyncRead cannot sync read OPC Items")
@@ -424,24 +417,20 @@ func (ag *AutomationGroup) syncReadTarget(targetTags []string) (map[string]Item,
 	defer valueSac.Release()
 	errorSac := &ole.SafeArrayConversion{Array: saErrors}
 	defer errorSac.Release()
-	qualitySac := &ole.SafeArrayConversion{Array: saQualities}
-	defer qualitySac.Release()
-	timestampSac := &ole.SafeArrayConversion{Array: saTimestamps}
-	defer timestampSac.Release()
 
 	if OPCConfig.Mode == ReadModeMultiLowerBound1 {
 		// 如果是从1开始读取的模式(VB6 OPCDA)
 		values = valueSac.ToValueArrayWithOffset(1)
 		errorCodes = errorSac.ToValueArrayWithOffset(1)
-		qualities = qualitySac.ToValueArrayWithOffset(1)
-		timestamps = timestampSac.ToValueArrayWithOffset(1)
+		qualities = vQualities.ToArray().ToValueArrayWithOffset(1)
+		timestamps = vTimestamps.ToArray().ToValueArrayWithOffset(1)
 	}
 	if OPCConfig.Mode == ReadModeMultiLowerBound0 {
 		// 是从0开始编号的模式(C# OPCDA)
 		values = valueSac.ToValueArray()
 		errorCodes = errorSac.ToValueArray()
-		qualities = qualitySac.ToValueArray()
-		timestamps = timestampSac.ToValueArray()
+		qualities = vQualities.ToArray().ToValueArray()
+		timestamps = vTimestamps.ToArray().ToValueArray()
 	}
 
 	allTags := make(map[string]Item)
@@ -722,10 +711,59 @@ func ensureInt16(q interface{}) int16 {
  * some opc servers sometimes returns an int32 Quality, that produces panic
  */
 func ensureTimestamp(q interface{}) time.Time {
-	if t, ok := q.(time.Time); ok {
-		return t
+	if q == nil {
+		return time.Now()
 	}
-	return time.Now()
+	switch v := q.(type) {
+	case time.Time:
+		return v
+	case int:
+		ms := int64(v)
+		return time.Unix(ms/1000, (ms%1000)*1e6)
+	case int16:
+		ms := int64(v)
+		return time.Unix(ms/1000, (ms%1000)*1e6)
+	case int8:
+		ms := int64(v)
+		return time.Unix(ms/1000, (ms%1000)*1e6)
+	case int32:
+		ms := int64(v)
+		return time.Unix(ms/1000, (ms%1000)*1e6)
+	case int64:
+		return time.Unix(v/1000, (v%1000)*1e6)
+	case uint8:
+		ms := int64(v)
+		return time.Unix(ms/1000, (ms%1000)*1e6)
+	case uint16:
+		ms := int64(v)
+		return time.Unix(ms/1000, (ms%1000)*1e6)
+	case uint32:
+		ms := int64(v)
+		return time.Unix(ms/1000, (ms%1000)*1e6)
+	case uint64:
+		ms := int64(v)
+		return time.Unix(ms/1000, (ms%1000)*1e6)
+	case float64:
+		anchor := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+		days := math.Trunc(v)
+		fraction := math.Abs(v - days)
+		res := anchor.AddDate(0, 0, int(days))
+		const nsPerDay = float64(24 * 60 * 60 * 1e9)
+		nanoSeconds := fraction * nsPerDay
+		res = res.Add(time.Duration(nanoSeconds))
+		return res
+	case float32:
+		anchor := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+		days := math.Trunc(float64(v))
+		fraction := math.Abs(float64(v) - days)
+		res := anchor.AddDate(0, 0, int(days))
+		const nsPerDay = float64(24 * 60 * 60 * 1e9)
+		nanoSeconds := fraction * nsPerDay
+		res = res.Add(time.Duration(nanoSeconds))
+		return res
+	default:
+		return time.Now()
+	}
 }
 
 // readFromOPC reads from the server and returns an Item and error.
@@ -748,7 +786,7 @@ func (ai *AutomationItems) readFromOpc(opcitem *ole.IDispatch) (Item, error) {
 	return Item{
 		Value:     v.Value(),
 		Quality:   ensureInt16(q.Value()), // FIX: ensure the quality value is int16
-		Timestamp: ts.Value().(time.Time),
+		Timestamp: ensureTimestamp(ts.Value()),
 	}, nil
 }
 
@@ -890,12 +928,12 @@ func (conn *opcConnectionImpl) ReadItems(tags ...string) map[string]Item {
 				if err != nil {
 					logger.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
 					conn.fix()
-					break
+					continue
 				}
 				allTags[tag] = item
 			} else {
 				logger.Printf("Tag %s not found. Add it first before reading it.", tag)
-				break
+				continue
 			}
 		}
 		return allTags
