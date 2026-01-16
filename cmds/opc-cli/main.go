@@ -22,9 +22,12 @@ func main() {
 		Use:   "list [node]",
 		Short: "Lists the OPC servers available on a specific node.",
 		Long:  ``,
-		Args:  cobra.MinimumNArgs(1),
+		Args:  cobra.MinimumNArgs(0),
 		Run: func(cmd *cobra.Command, args []string) {
-			node := args[0]
+			var node string
+			if args != nil && len(args) > 0 {
+				node = args[0]
+			}
 			CheckDebug()
 			servers_found := opc.NewAutomationObject().GetOPCServers(node)
 			fmt.Printf("Found %d server(s) on '%s':\n", len(servers_found), node)
@@ -133,7 +136,7 @@ func main() {
 
 	rootCmd.PersistentFlags().BoolVarP(&Debug, "debug", "d", false, "set OPC logging")
 
-	rootCmd.PersistentFlags().IntVar(&opc.OPCConfig.Mode, "mode", 0, "ReadModeMultiLowerBound1(0), ReadModeSingle(1), ReadModeMultiLowerBound0(2)")
+	rootCmd.PersistentFlags().IntVar(&opc.OPCConfig.Mode, "mode", 0, "ReadModeSingle(0), ReadModeMultiLowerBound1(1), ReadModeMultiLowerBound0(2)")
 
 	rootCmd.PersistentFlags().Int32Var(&opc.OPCConfig.ReadSource, "readSource", 0, "OPCDevice(2) or OPCCache(1)")
 

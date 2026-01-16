@@ -187,16 +187,34 @@ func (ao *AutomationObject) IsConnected() bool {
 
 // GetOPCServers returns a list of Prog ID on the specified node
 func (ao *AutomationObject) GetOPCServers(node string) []string {
-	progids, err := oleutil.CallMethod(ao.object, "GetOPCServers", node)
+	var progids *ole.VARIANT
+	var err error
+	if node == "" {
+		progids, err = oleutil.CallMethod(ao.object, "GetOPCServers")
+	} else {
+		progids, err = oleutil.CallMethod(ao.object, "GetOPCServers", node)
+	}
+
 	if err != nil {
 		logger.Println("GetOPCServers call failed.")
 		return []string{}
 	}
 
+	var valus []interface{}
+
+	if OPCConfig.Mode == ReadModeMultiLowerBound0 {
+		valus = progids.ToArray().ToValueArray()
+	} else {
+		valus = progids.ToArray().ToValueArrayWithOffset(1)
+	}
+
 	var servers_found []string
-	for _, v := range progids.ToArray().ToStringArray() {
-		if v != "" {
-			servers_found = append(servers_found, v)
+	for _, v := range valus {
+		if s, ok := v.(string); ok {
+			if s == "" {
+				continue
+			}
+			servers_found = append(servers_found, s)
 		}
 	}
 	return servers_found

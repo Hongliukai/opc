@@ -96,7 +96,16 @@ map[numeric.sin.int64:{91 192 2019-06-21 15:23:08 +0000 UTC} numeric.saw.float:{
 
 * ```opc-cli``` is a command-line interface to work with OPC servers: list available OPC servers, browse OPC tags on server, and read/write OPC tags.
 * Install it with ```go install github.com/konimarti/opc/cmds/opc-cli```
-
+* Usage examples:
+  全局参数:
+  ```
+  Flags:
+  -d, --debug              set OPC logging
+  -h, --help               help for opc-cli
+      --mode int           ReadModeSingle(0), ReadModeMultiLowerBound1(1), ReadModeMultiLowerBound0(2)
+      --readSource int32   OPCDevice(2) or OPCCache(1)
+  ```
+  具体参数参考opc-api部分说明
   - List OPC servers on a specific node: 
     ```
     $ opc-cli.exe list localhost
@@ -141,6 +150,10 @@ map[numeric.sin.int64:{91 192 2019-06-21 15:23:08 +0000 UTC} numeric.saw.float:{
     allow_add = true
     allow_remove = true
     all_tags = true
+    mode = 0
+    read_source = 1
+    tags_cache = false
+    tags_cache_sync_period = "10s"
   
     [opc]
     server = "Graybox.Simulator"
@@ -148,7 +161,17 @@ map[numeric.sin.int64:{91 192 2019-06-21 15:23:08 +0000 UTC} numeric.saw.float:{
     tags = [ "numeric.sin.float", "numeric.saw.float" ]
   
     ```
-
+      config options:
+      |参数|默认值|说明|
+      |-|-|-|
+      |allow_write|false|允许通过API写入 标签列表(opc.tags) 中某标签|
+      |allow_add|false|允许通过API添加 标签列表(opc.tags)|
+      |allow_remove|false|允许通过API删除 标签列表(opc.tags)|
+      |all_tags|false|自动添加OPC服务器上的所有标签到标签列表(opc.tags)|
+      |mode|0|0=单标签访问模式，通过OPC AddItem/Read 实现<br>1=多标签访问/数组下界1模式，通过OPC AddItems/SyncRead 等批量操作实现，兼容VB 数组下界1情况（OPC DA）<br>2=多标签访问/数组下界0模式，通过OPC AddItems/SyncRead 等批量操作实现，预留以防止特殊情况|
+      |read_source|1|读取来源,该选项来源于OPC Server,具体参考OPC Server<br>1=OPCCache, 从缓存读取数据<br>2=OPCDevice, 直接从OPC设备读取数据|
+      |tags_cache|false|是否启用标签缓存功能,启用后服务会按照tags_cache_sync_period周期读取 标签列表的数据并缓存,读取API时优先从缓存获取数据,提高响应速度|
+      |tags_cache_sync_period|1m|标签缓存同步周期,仅在tags_cache启用时有效，支持的时间单位有ns, us (or µs), ms, s, m, h，例如 "300ms", "10s", "2m"。|
   - Run app: 
     ```
     $ opcapi.exe -conf api.conf -addr ":4444"
